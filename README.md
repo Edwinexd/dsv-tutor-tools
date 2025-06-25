@@ -12,7 +12,3 @@ along with your https://mobil.handledning.dsv.su.se/ session cookies upon startu
 
 ## Disclaimer
 This project is not affiliated with Stockholm University in any way. It is a personal project and should be used responsibly. Provided as is, no guarantees are made about its functionality or security.
-
-If you are a representative of Stockholm University/DSV and need to get in touch, please contact me at [edwin.sundberg@dsv.su.se](mailto:edwin.sundberg@dsv.su.se).
-
-
