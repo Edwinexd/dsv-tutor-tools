@@ -33,7 +33,7 @@ failures = 0
 last_name: Optional[str] = None
 while True:
     time.sleep(1)
-    response = requests.get(URL, cookies=cookies_dict, timeout=5, headers={"X-Powered-By": "dsv-tutor-pushover (https://github.com/Edwinexd/dsv-tutor-pushover); Contact (edwin.sundberg@dsv.su.se)"})
+    response = requests.get(URL, cookies=cookies_dict, timeout=5, headers={"X-Powered-By": "dsv-tutor-pushover (https://github.com/Edwinexd/dsv-tutor-pushover); Contact (edwinsu@dsv.su.se)"})
     if response.status_code != 200 or "Log in" in response.text:
         print(f"Status code: {response.status_code}, contains 'Log in': {'Log in' in response.text}")
         time.sleep(min(2**failures, 32))
