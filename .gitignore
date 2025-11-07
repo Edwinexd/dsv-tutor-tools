@@ -1,1 +1,4 @@
+venv/
 .env
+.cookie_cache.json
+__pycache__/
