@@ -703,6 +703,139 @@ def get_list_info_for_student(handledning_cookies: Dict[str, str], student_name:
     return None
 
 
+def get_planned_schedules(handledning_cookies: Dict[str, str]) -> List[Dict[str, str]]:
+    """
+    Fetch planned tutoring schedules for the logged-in teacher
+
+    Args:
+        handledning_cookies: Dictionary containing JSESSIONID cookie for handledning.dsv.su.se
+
+    Returns:
+        List of dictionaries with schedule information:
+        - course: Course name/code
+        - start_time: Start datetime
+        - end_time: End datetime
+        - location: Location (if available)
+        - list_id: Associated list ID
+    """
+    headers = {
+        "X-Powered-By": "dsv-tutor-pushover (https://github.com/Edwinexd/dsv-tutor-pushover); Contact (edwinsu@dsv.su.se)",
+    }
+
+    # Fetch teacher page with filter for planned lists only (lists where you are scheduled)
+    response = requests.get(
+        "https://handledning.dsv.su.se/teacher/?onlyown=yes",
+        cookies=handledning_cookies,
+        timeout=10,
+        headers=headers
+    )
+
+    if response.status_code != 200:
+        raise ValueError(f"Failed to fetch planned schedules, status code: {response.status_code}")
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    schedules = []
+
+    import re
+    from datetime import datetime
+
+    # Find the main table with schedule information
+    # Look for table with headers like "Listtyp", "Datum", "Tid", "Kurser"
+    tables = soup.find_all("table")
+
+    for table in tables:
+        rows = table.find_all("tr")
+
+        # Check if this is the schedule table by looking for header row
+        if not rows:
+            continue
+
+        header_row = rows[0]
+        header_text = header_row.get_text()
+
+        # Check if this table has the expected headers
+        if "Datum" not in header_text or "Tid" not in header_text:
+            continue
+
+        # Found the schedule table, parse data rows
+        for row in rows[1:]:  # Skip header row
+            cells = row.find_all("td")
+
+            if len(cells) < 4:  # Need at least: Listtyp, Datum, Tid, Kurser
+                continue
+
+            try:
+                # Column 0: List type (e.g., "Handledning")
+                list_type = cells[0].get_text(strip=True)
+
+                # Column 1: Date (format: YYYY-MM-DD)
+                date_str = cells[1].get_text(strip=True)
+                if not date_str or not re.match(r'\d{4}-\d{2}-\d{2}', date_str):
+                    continue
+
+                # Column 2: Time range (format: "HH:MM - HH:MM")
+                time_str = cells[2].get_text(strip=True)
+                time_match = re.search(r'(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})', time_str)
+                if not time_match:
+                    continue
+
+                # Column 3: Courses (format: "[ CPROG ]" or multiple courses)
+                courses_str = cells[3].get_text(strip=True)
+                # Extract course codes from brackets
+                course_codes = re.findall(r'\[\s*([^\]]+?)\s*\]', courses_str)
+                course_name = ", ".join(course_codes) if course_codes else list_type
+
+                # Column 4: Comments/notes (e.g., "Ange Zoom-ID")
+                comments = cells[4].get_text(strip=True) if len(cells) > 4 else ""
+
+                # Parse date
+                date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+
+                # Parse time
+                start_hour = int(time_match.group(1))
+                start_min = int(time_match.group(2))
+                end_hour = int(time_match.group(3))
+                end_min = int(time_match.group(4))
+
+                start_time = date_obj.replace(hour=start_hour, minute=start_min)
+                end_time = date_obj.replace(hour=end_hour, minute=end_min)
+
+                # Try to find list ID from any links in the row
+                list_id = None
+                for cell in cells:
+                    link = cell.find("a", href=re.compile(r"listid=\d+"))
+                    if link:
+                        listid_match = re.search(r"listid=(\d+)", link.get("href"))
+                        if listid_match:
+                            list_id = listid_match.group(1)
+                            break
+
+                schedules.append({
+                    "course": course_name,
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "location": comments if comments else "",
+                    "list_id": list_id,
+                    "list_type": list_type
+                })
+
+            except (ValueError, IndexError) as e:
+                # Skip rows that don't parse correctly
+                continue
+
+    # Remove duplicates based on list_id, start_time, and end_time
+    seen = set()
+    unique_schedules = []
+    for schedule in schedules:
+        # Create a unique key for deduplication
+        key = (schedule["list_id"], schedule["start_time"], schedule["end_time"])
+        if key not in seen:
+            seen.add(key)
+            unique_schedules.append(schedule)
+
+    return unique_schedules
+
+
 def parse_list_details(html: str, listid: str) -> Dict[str, str]:
     """Parse list details HTML and extract relevant information"""
     soup = BeautifulSoup(html, "html.parser")
