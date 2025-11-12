@@ -1,4 +1,27 @@
+# Python
 venv/
-.env
-.cookie_cache.json
+.venv/
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment and secrets
+.env
+.dev.vars
+
+# Cloudflare Workers
+.wrangler/
+node_modules/
+
+# Cache files
+.cookie_cache.json
+cookie_cache.json
+
+# Generated files with sensitive data
+YOUR_CALENDAR_URL.txt
+
+# Build artifacts
+dist/
+build/
+*.egg-info/

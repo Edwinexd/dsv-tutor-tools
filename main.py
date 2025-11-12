@@ -44,13 +44,18 @@ def calculate_next_retry_time():
 def wait_until_retry():
     """Wait until next retry time (midnight or 1 hour, whichever comes first)"""
     retry_time, retry_reason = calculate_next_retry_time()
-    now = datetime.now()
-    wait_seconds = (retry_time - now).total_seconds()
 
     print(f"Waiting until {retry_time.strftime('%Y-%m-%d %H:%M:%S')} ({retry_reason}) to retry...")
-    print(f"Sleeping for {wait_seconds:.0f} seconds ({wait_seconds/3600:.1f} hours)")
 
-    time.sleep(max(0, wait_seconds))
+    # Sleep in 10-minute intervals and check if we've reached the target time
+    # This handles laptop sleep/wake cycles properly
+    while datetime.now() < retry_time:
+        remaining = (retry_time - datetime.now()).total_seconds()
+        if remaining <= 0:
+            break
+        # Sleep for at most 10 minutes (600 seconds) at a time
+        sleep_duration = min(600, remaining)
+        time.sleep(sleep_duration)
 
 # Main loop - runs indefinitely
 while True:
@@ -73,12 +78,17 @@ while True:
         handledning_cookies = {"JSESSIONID": handledning_jsessionid}
         print("Successfully logged in to handledning!")
 
-        # Activate all lists on login
+        # Activate lists immediately on startup
         print("Activating all lists...")
-        activated_count = activate_all_lists(cookies_dict)
-        print(f"Activated {activated_count} list(s)")
+        try:
+            activated_count = activate_all_lists(cookies_dict)
+            print(f"Activated {activated_count} list(s)")
+            if activated_count > 0:
+                print("Waiting 3 seconds for activation to take effect...")
+                time.sleep(3)
+        except Exception as e:
+            print(f"Failed to activate lists: {e}")
 
-        failures = 0
         last_name: Optional[str] = None
         last_activation_time = time.time()
         ACTIVATION_INTERVAL = 15 * 60  # 15 minutes in seconds
@@ -96,21 +106,17 @@ while True:
                     print(f"Activated {activated_count} list(s)")
                     last_activation_time = current_time
                 except Exception as e:
-                    print(f"Failed to activate lists: {e}")
+                    print(f"Failed to activate lists (will retry on next check): {e}")
 
             response = requests.get(URL, cookies=cookies_dict, timeout=5, headers={"X-Powered-By": "dsv-tutor-pushover (https://github.com/Edwinexd/dsv-tutor-pushover); Contact (edwinsu@dsv.su.se)"})
-            if response.status_code != 200 or "Log in" in response.text:
-                print(f"Status code: {response.status_code}, contains 'Log in': {'Log in' in response.text}")
-                time.sleep(min(2**failures, 32))
-                failures += 1
-                continue
 
-            if "Du är inte aktiv på någon lista." in response.text:
-                print("You are not active on any list - will retry later")
+            if "Du är inte aktiv på någon lista." in response.text or "Log in" in response.text:
+                if "Du är inte aktiv på någon lista." in response.text:
+                    print("You are not active on any list - will retry later")
+                else:
+                    print("Session invalid (not active on any list) - will retry later")
                 wait_until_retry()
                 break  # Break inner loop to re-login
-
-            failures = 0
 
             if "Kön är just nu tom" in response.text:
                 last_name = None
@@ -123,25 +129,13 @@ while True:
                     continue
                 last_name = full_text
 
-                # Get list information - this will give us clean student name
-                list_info = None
-                try:
-                    list_info = get_list_info_for_student(handledning_cookies, full_text)
-                except Exception as e:
-                    print(f"Failed to get list information: {e}")
-
-                # Use clean student name from handledning system if available
-                if list_info and "student_name" in list_info:
-                    name = list_info["student_name"]
-                    location = list_info.get("location", None)
+                # Parse name and location quickly from the text
+                if " i " in full_text:
+                    name = full_text.split(" i ")[0].strip()
+                    location = full_text.split(" i ")[1].strip()
                 else:
-                    # Fallback to basic parsing if handledning lookup failed
-                    if " i " in full_text:
-                        name = full_text.split(" i ")[0].strip()
-                        location = full_text.split(" i ")[1].strip()
-                    else:
-                        name = full_text
-                        location = None
+                    name = full_text
+                    location = None
 
                 # Search for student email in Daisy using clean name
                 email = None
@@ -152,36 +146,35 @@ while True:
                 except Exception as e:
                     print(f"Failed to lookup student email: {e}")
 
-                # Build notification message with list context
-                notification_parts = [f"Next in queue: {name}"]
+                # Build and send notification immediately (without list info to be fast)
+                notification_message = f"Next in queue: {name}"
+                if location:
+                    notification_message += f"\nLocation: {location}"
 
-                if list_info:
-                    if list_info.get("other_teachers"):
-                        other_teachers = ", ".join(list_info["other_teachers"])
-                        notification_parts.append(f"Other teachers: {other_teachers}")
-                    if list_info.get("course"):
-                        notification_parts.append(f"Course: {list_info['course']}")
-
-                notification_message = "\n".join(notification_parts)
-
-                # Send notification
                 send_notification(pushover_key, pushover_user, notification_message)
 
-                # Print to stdout with full details (local only)
+                # Print basic info immediately
                 print(f"\n{'='*60}")
                 print(f"Next in queue: {name}")
                 if location:
                     print(f"Location: {location}")
                 if email:
                     print(f"Email: {email}")
-                if list_info:
-                    if list_info.get("course"):
-                        print(f"Course: {list_info['course']}")
-                    if list_info.get("other_teachers"):
-                        print(f"Other teachers on list: {', '.join(list_info['other_teachers'])}")
-                    if list_info.get("recent_activity"):
-                        print(f"Recent activity: {list_info['recent_activity']}")
-                    print(f"List ID: {list_info.get('listid')}")
+
+                # Now fetch list information (slower, doesn't block notification)
+                try:
+                    list_info = get_list_info_for_student(handledning_cookies, full_text)
+                    if list_info:
+                        if list_info.get("course"):
+                            print(f"Course: {list_info['course']}")
+                        if list_info.get("other_teachers"):
+                            print(f"Other teachers on list: {', '.join(list_info['other_teachers'])}")
+                        if list_info.get("recent_activity"):
+                            print(f"Recent activity: {list_info['recent_activity']}")
+                        print(f"List ID: {list_info.get('listid')}")
+                except Exception as e:
+                    print(f"Failed to get list information: {e}")
+
                 print(f"{'='*60}\n")
 
                 time.sleep(5)

@@ -1,0 +1,26 @@
+name = "dsv-calendar"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+account_id = "edf1f3e822b592035dc4b32281cb1814"
+node_compat = true
+
+# KV namespace for cookie caching (multi-user support)
+[[kv_namespaces]]
+binding = "COOKIE_CACHE"
+id = "e1ecf879410b4392970acd7718d5ab70"
+preview_id = "b9fb9c8aaea845fbb618f47c1e89e225"
+
+# Optional: Configure routes for production
+# routes = [
+#   { pattern = "calendar.yourdomain.com/*", zone_name = "yourdomain.com" }
+# ]
+
+# Optional: Environment variables for default credentials (for testing)
+# [vars]
+# DEFAULT_USERNAME = "edsu8469"
+
+# Required Secrets (use: wrangler secret put SECRET_NAME)
+# CALENDAR_SECRET - Secret key for digest validation (required for security)
+#   Generate with: openssl rand -hex 32
+#   Set with: npx wrangler secret put CALENDAR_SECRET
+#   Then generate digest: echo -n "your-secret" | sha256sum

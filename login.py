@@ -326,7 +326,7 @@ def activate_all_lists(cookies_dict: Dict[str, str]) -> int:
     Activates all inactive lists for the current user
 
     Args:
-        cookies_dict: Dictionary containing JSESSIONID cookie
+        cookies_dict: Dictionary containing JSESSIONID cookie for mobil.handledning.dsv.su.se
 
     Returns:
         Number of lists activated
@@ -335,7 +335,7 @@ def activate_all_lists(cookies_dict: Dict[str, str]) -> int:
         "X-Powered-By": "dsv-tutor-pushover (https://github.com/Edwinexd/dsv-tutor-pushover); Contact (edwinsu@dsv.su.se)",
     }
 
-    # Get list of teachers/lists
+    # Get list of teachers/lists (only works if already active on at least one list)
     response = requests.get(
         "https://mobil.handledning.dsv.su.se/servlet/GetListTeachersServlet",
         cookies=cookies_dict,
@@ -739,6 +739,22 @@ def get_planned_schedules(handledning_cookies: Dict[str, str]) -> List[Dict[str,
     import re
     from datetime import datetime
 
+    # First, find all "Mina tider" time ranges (these are the sessions where you're actually scheduled)
+    mina_tider_times = set()
+    for elem in soup.find_all(string=lambda text: text and 'Mina tider' in text):
+        parent_td = elem.find_parent('td')
+        if parent_td and parent_td.get('colspan'):  # Mina tider is in a colspan td
+            # Extract time ranges from this cell only
+            cell_text = parent_td.get_text()
+            time_ranges = re.findall(r'(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})', cell_text)
+            # Only add times that appear AFTER "Mina tider:" text
+            if 'Mina tider' in cell_text:
+                # Split at "Mina tider:" and only look at the part after
+                after_mina_tider = cell_text.split('Mina tider', 1)[1]
+                time_ranges_after = re.findall(r'(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})', after_mina_tider)
+                for time_range in time_ranges_after:
+                    mina_tider_times.add(time_range)
+
     # Find the main table with schedule information
     # Look for table with headers like "Listtyp", "Datum", "Tid", "Kurser"
     tables = soup.find_all("table")
@@ -799,6 +815,15 @@ def get_planned_schedules(handledning_cookies: Dict[str, str]) -> List[Dict[str,
 
                 start_time = date_obj.replace(hour=start_hour, minute=start_min)
                 end_time = date_obj.replace(hour=end_hour, minute=end_min)
+
+                # Only include this schedule if it matches a "Mina tider" time range
+                # time_tuple format: ('10', '00', '12', '00') from the regex match
+                time_tuple = (time_match.group(1), time_match.group(2),
+                             time_match.group(3), time_match.group(4))
+
+                if mina_tider_times and time_tuple not in mina_tider_times:
+                    # Skip this schedule - not in "Mina tider"
+                    continue
 
                 # Try to find list ID from any links in the row
                 list_id = None

@@ -1,0 +1,18 @@
+{
+  "name": "dsv-calendar-worker",
+  "version": "1.0.0",
+  "description": "DSV Calendar Export Service for Cloudflare Workers",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "generate-url": "node generate_calendar_url.js"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.47.0"
+  }
+}
