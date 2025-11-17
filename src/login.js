@@ -301,10 +301,10 @@ export async function handledningLogin(kv, username, password, useCache = true) 
   return jsessionid;
 }
 
-export async function getPlannedSchedules(kv, username, password) {
-  const jsessionid = await handledningLogin(kv, username, password);
+export async function getPlannedSchedules(kv, username, password, useCache = true) {
+  let jsessionid = await handledningLogin(kv, username, password, useCache);
 
-  const response = await fetch('https://handledning.dsv.su.se/teacher/?onlyown=yes', {
+  let response = await fetch('https://handledning.dsv.su.se/teacher/?onlyown=yes', {
     headers: {
       'Cookie': `JSESSIONID=${jsessionid}`,
       'X-Powered-By': 'dsv-calendar-worker; Contact (edwinsu@dsv.su.se)'
@@ -315,23 +315,53 @@ export async function getPlannedSchedules(kv, username, password) {
     throw new Error(`Failed to fetch schedules: ${response.status}`);
   }
 
-  const html = await response.text();
+  let html = await response.text();
+
+  // Check if we got redirected to login page (cookie expired)
+  if (html.includes('Stockholm University') && html.includes('login')) {
+    // Cookie is invalid, force re-login
+    jsessionid = await handledningLogin(kv, username, password, false);
+
+    response = await fetch('https://handledning.dsv.su.se/teacher/?onlyown=yes', {
+      headers: {
+        'Cookie': `JSESSIONID=${jsessionid}`,
+        'X-Powered-By': 'dsv-calendar-worker; Contact (edwinsu@dsv.su.se)'
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch schedules after re-login: ${response.status}`);
+    }
+
+    html = await response.text();
+  }
   const $ = cheerio.load(html);
   const schedules = [];
 
   // First, find all "Mina tider" time ranges (sessions where you're actually scheduled)
-  const minaTiderTimes = new Set();
+  const minaTiderKeys = new Set();
   $('td[colspan]').each((i, elem) => {
     const cellText = $(elem).text();
     if (cellText.includes('Mina tider')) {
-      // Only extract times AFTER "Mina tider:" text
-      const afterMinaTider = cellText.split('Mina tider')[1];
-      if (afterMinaTider) {
-        const timeMatches = afterMinaTider.matchAll(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/g);
-        for (const match of timeMatches) {
-          // Store as string key: "start_hour:start_min-end_hour:end_min"
-          const timeKey = `${match[1]}:${match[2]}-${match[3]}:${match[4]}`;
-          minaTiderTimes.add(timeKey);
+      // Find the date from the previous row (Mina tider appears in a row below the schedule row)
+      const currentRow = $(elem).parent('tr');
+      const previousRow = currentRow.prev('tr');
+
+      if (previousRow.length > 0) {
+        const cells = previousRow.find('td');
+        if (cells.length >= 3) {
+          const dateStr = $(cells[1]).text().trim();
+
+          // Only extract times AFTER "Mina tider:" text
+          const afterMinaTider = cellText.split('Mina tider')[1];
+          if (afterMinaTider) {
+            const timeMatches = afterMinaTider.matchAll(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/g);
+            for (const match of timeMatches) {
+              // Store as "date:time" key
+              const key = `${dateStr}:${match[1]}:${match[2]}-${match[3]}:${match[4]}`;
+              minaTiderKeys.add(key);
+            }
+          }
         }
       }
     }
@@ -385,9 +415,9 @@ export async function getPlannedSchedules(kv, username, password) {
         const startTime = new Date(year, month - 1, day, startHour, startMin);
         const endTime = new Date(year, month - 1, day, endHour, endMin);
 
-        // Only include if this time matches a "Mina tider" entry
-        const timeKey = `${timeMatch[1]}:${timeMatch[2]}-${timeMatch[3]}:${timeMatch[4]}`;
-        if (minaTiderTimes.size > 0 && !minaTiderTimes.has(timeKey)) {
+        // Only include if this date+time matches a "Mina tider" entry
+        const key = `${dateStr}:${timeMatch[1]}:${timeMatch[2]}-${timeMatch[3]}:${timeMatch[4]}`;
+        if (!minaTiderKeys.has(key)) {
           return; // Skip this schedule - not in "Mina tider"
         }
 

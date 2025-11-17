@@ -1,10 +1,10 @@
 import os
 import time
-from typing import Optional
+from typing import Optional, List, Dict
 from datetime import datetime, timedelta
 import requests
 from dotenv import load_dotenv
-from login import mobil_handledning_login, activate_all_lists, daisy_staff_login, daisy_search_student, handledning_login, get_list_info_for_student
+from login import mobil_handledning_login, activate_all_lists, daisy_staff_login, daisy_search_student, handledning_login, get_list_info_for_student, get_planned_schedules
 
 load_dotenv()
 
@@ -57,6 +57,48 @@ def wait_until_retry():
         sleep_duration = min(600, remaining)
         time.sleep(sleep_duration)
 
+def is_in_active_session(schedules: List[Dict], buffer_minutes: int = 15) -> bool:
+    """
+    Check if we're currently in an active tutoring session (with buffer time before/after)
+
+    Args:
+        schedules: List of schedule dictionaries with start_time and end_time
+        buffer_minutes: Buffer time in minutes before and after each session (default: 15)
+
+    Returns:
+        True if we're currently in an active session (or within buffer), False otherwise
+    """
+    now = datetime.now()
+    buffer = timedelta(minutes=buffer_minutes)
+
+    for schedule in schedules:
+        start_time = schedule["start_time"]
+        end_time = schedule["end_time"]
+
+        # Check if current time is within session (with buffer)
+        if start_time - buffer <= now <= end_time + buffer:
+            return True
+
+    return False
+
+def get_next_session_time(schedules: List[Dict]) -> Optional[datetime]:
+    """
+    Get the start time of the next upcoming session
+
+    Args:
+        schedules: List of schedule dictionaries with start_time
+
+    Returns:
+        Datetime of next session start, or None if no upcoming sessions
+    """
+    now = datetime.now()
+    upcoming_sessions = [s["start_time"] for s in schedules if s["start_time"] > now]
+
+    if upcoming_sessions:
+        return min(upcoming_sessions)
+
+    return None
+
 # Main loop - runs indefinitely
 while True:
     try:
@@ -91,11 +133,65 @@ while True:
 
         last_name: Optional[str] = None
         last_activation_time = time.time()
+        last_schedule_fetch_time = 0.0
         ACTIVATION_INTERVAL = 15 * 60  # 15 minutes in seconds
+        SCHEDULE_FETCH_INTERVAL = 15 * 60  # 15 minutes in seconds
+        SLOW_POLL_INTERVAL = 15 * 60  # 15 minutes when no active session
+        FAST_POLL_INTERVAL = 1  # 1 second when in active session
 
-        print("Starting queue monitoring...")
+        # Fetch initial schedule
+        print("Fetching initial schedule...")
+        schedules = []
+        try:
+            schedules = get_planned_schedules(handledning_cookies)
+            print(f"Found {len(schedules)} scheduled sessions")
+            if schedules:
+                for schedule in schedules[:3]:  # Show first 3
+                    print(f"  - {schedule['course']}: {schedule['start_time'].strftime('%Y-%m-%d %H:%M')} - {schedule['end_time'].strftime('%H:%M')}")
+                if len(schedules) > 3:
+                    print(f"  ... and {len(schedules) - 3} more")
+            last_schedule_fetch_time = time.time()
+        except Exception as e:
+            print(f"Failed to fetch schedule: {e}")
+
+        print("Starting queue monitoring with adaptive polling...")
+        last_polling_mode = None  # Track polling mode to avoid duplicate logging
+
         while True:
-            time.sleep(1)
+            # Check if it's time to refetch schedule
+            current_time = time.time()
+            if current_time - last_schedule_fetch_time >= SCHEDULE_FETCH_INTERVAL:
+                print("Refreshing schedule...")
+                try:
+                    schedules = get_planned_schedules(handledning_cookies)
+                    print(f"Found {len(schedules)} scheduled sessions")
+                    last_schedule_fetch_time = current_time
+                except Exception as e:
+                    print(f"Failed to refresh schedule: {e}")
+
+            # Determine polling interval based on whether we're in an active session
+            in_active_session = is_in_active_session(schedules)
+            poll_interval = FAST_POLL_INTERVAL if in_active_session else SLOW_POLL_INTERVAL
+
+            # Log status change only when mode changes
+            current_mode = "fast" if in_active_session else "slow"
+            if current_mode != last_polling_mode:
+                if in_active_session:
+                    print(f"Entering active session period - switching to fast polling ({FAST_POLL_INTERVAL}s interval)")
+                else:
+                    next_session = get_next_session_time(schedules)
+                    if next_session:
+                        print(f"No active session - switching to slow polling ({SLOW_POLL_INTERVAL // 60} min interval). Next session: {next_session.strftime('%Y-%m-%d %H:%M')}")
+                    else:
+                        print(f"No active session - switching to slow polling ({SLOW_POLL_INTERVAL // 60} min interval). No upcoming sessions today.")
+                last_polling_mode = current_mode
+
+            # If not in active session, sleep and skip queue checking
+            if not in_active_session:
+                time.sleep(poll_interval)
+                continue
+
+            time.sleep(FAST_POLL_INTERVAL)
 
             # Check if it's time to reactivate lists
             current_time = time.time()

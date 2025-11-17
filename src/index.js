@@ -84,20 +84,31 @@ async function handleCalendar(request, env) {
 
   // Fetch schedules
   try {
-    const schedules = await getPlannedSchedules(env.COOKIE_CACHE, username, password);
+    // Check for nocache parameter to bypass KV cache
+    const nocache = url.searchParams.get('nocache') === 'true';
+    const schedules = await getPlannedSchedules(env.COOKIE_CACHE, username, password, !nocache);
 
     // Generate ICS
     const icsContent = generateICS(schedules);
 
-    return new Response(icsContent, {
-      headers: {
-        'Content-Type': 'text/calendar; charset=utf-8',
-        'Content-Disposition': 'inline; filename=dsv-tutoring.ics',
-        'Cache-Control': 'private, max-age=900'
-      }
-    });
+    // Add debug header if nocache was used
+    const headers = {
+      'Content-Type': 'text/calendar; charset=utf-8',
+      'Content-Disposition': 'inline; filename=dsv-tutoring.ics',
+      'Cache-Control': 'private, max-age=900'
+    };
+    if (nocache) {
+      headers['X-Cache-Bypassed'] = 'true';
+    }
+    headers['X-Schedule-Count'] = schedules.length.toString();
+
+    return new Response(icsContent, { headers });
   } catch (e) {
-    return new Response(JSON.stringify({ error: `Authentication failed: ${e.message}` }), {
+    console.error('Calendar fetch error:', e);
+    return new Response(JSON.stringify({
+      error: `Authentication failed: ${e.message}`,
+      stack: e.stack
+    }), {
       status: 401,
       headers: { 'Content-Type': 'application/json' }
     });
