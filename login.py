@@ -370,6 +370,113 @@ def activate_all_lists(cookies_dict: Dict[str, str]) -> int:
     return activated_count
 
 
+def get_mobile_schedules(cookies_dict: Dict[str, str]) -> List[Dict[str, str]]:
+    """
+    Fetch planned tutoring schedules from the mobile handledning site
+
+    Args:
+        cookies_dict: Dictionary containing JSESSIONID cookie for mobil.handledning.dsv.su.se
+
+    Returns:
+        List of dictionaries with schedule information:
+        - course: Course name/code
+        - start_time: Start datetime
+        - end_time: End datetime
+        - list_id: Associated list ID (from listteacherid)
+    """
+    headers = {
+        "X-Powered-By": "dsv-tutor-pushover (https://github.com/Edwinexd/dsv-tutor-pushover); Contact (edwinsu@dsv.se)",
+    }
+
+    # Fetch the list of teachers/lists page which shows active lists
+    response = requests.get(
+        "https://mobil.handledning.dsv.su.se/servlet/GetListTeachersServlet",
+        cookies=cookies_dict,
+        timeout=10,
+        headers=headers
+    )
+
+    if response.status_code != 200:
+        raise ValueError(f"Failed to fetch mobile schedules, status code: {response.status_code}")
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    schedules = []
+
+    import re
+    from datetime import datetime, timedelta
+
+    # Parse structure:
+    # <td class="small">
+    #   Handledning
+    #   CPROG
+    #   13:00-15:00<br />
+    #   Mitt schema:
+    #   13:00-15:00 <br />
+    #   Ange Zoom-ID
+    # </td>
+
+    # Find all td elements with class="small" that contain schedule info
+    for td in soup.find_all("td", class_="small"):
+        td_text = td.get_text()
+
+        # Look for "Mitt schema:" which indicates this is an active list entry
+        if "Mitt schema:" not in td_text:
+            continue
+
+        # Extract course code (typically appears before the time)
+        # Look for a word in all caps or a course code pattern
+        course_match = re.search(r'\b([A-Z]{3,}[A-Z0-9]*)\b', td_text)
+        course_name = course_match.group(1) if course_match else "Unknown"
+
+        # Find the time AFTER "Mitt schema:" (this is YOUR scheduled time)
+        # Split by "Mitt schema:" and look in the second part
+        parts = td_text.split("Mitt schema:")
+        if len(parts) < 2:
+            continue
+
+        my_schedule_part = parts[1]
+
+        # Look for time pattern in "Mitt schema" section
+        time_match = re.search(r'(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})', my_schedule_part)
+        if not time_match:
+            continue
+
+        # Extract time
+        start_hour = int(time_match.group(1))
+        start_min = int(time_match.group(2))
+        end_hour = int(time_match.group(3))
+        end_min = int(time_match.group(4))
+
+        # Find list teacher ID from the deactivate link in the same row
+        parent_row = td.find_parent("tr")
+        list_id = None
+        if parent_row:
+            # Look for link with listteacherid parameter
+            link = parent_row.find("a", href=re.compile(r"listteacherid=\d+"))
+            if link:
+                listid_match = re.search(r"listteacherid=(\d+)", link.get("href"))
+                if listid_match:
+                    list_id = listid_match.group(1)
+
+        # Create datetime objects for today at the specified times
+        now = datetime.now()
+        start_time = now.replace(hour=start_hour, minute=start_min, second=0, microsecond=0)
+        end_time = now.replace(hour=end_hour, minute=end_min, second=0, microsecond=0)
+
+        # If the end time is before the start time, it crosses midnight
+        if end_time < start_time:
+            end_time += timedelta(days=1)
+
+        schedules.append({
+            "course": course_name,
+            "start_time": start_time,
+            "end_time": end_time,
+            "list_id": list_id
+        })
+
+    return schedules
+
+
 def daisy_staff_login(su_username: str, su_password: str, use_cache: bool = True) -> str:
     """
     Signs in to Daisy via SU login flow (staff login) and returns the JSESSIONID cookie value
@@ -739,21 +846,54 @@ def get_planned_schedules(handledning_cookies: Dict[str, str]) -> List[Dict[str,
     import re
     from datetime import datetime
 
-    # First, find all "Mina tider" time ranges (these are the sessions where you're actually scheduled)
-    mina_tider_times = set()
+    # First, find all "Mina tider" time ranges with their associated dates
+    # Maps (date, time_tuple) -> True for sessions where you're scheduled
+    mina_tider_entries = {}
+
+    # Iterate through all elements containing "Mina tider"
     for elem in soup.find_all(string=lambda text: text and 'Mina tider' in text):
         parent_td = elem.find_parent('td')
         if parent_td and parent_td.get('colspan'):  # Mina tider is in a colspan td
             # Extract time ranges from this cell only
             cell_text = parent_td.get_text()
-            time_ranges = re.findall(r'(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})', cell_text)
             # Only add times that appear AFTER "Mina tider:" text
             if 'Mina tider' in cell_text:
                 # Split at "Mina tider:" and only look at the part after
                 after_mina_tider = cell_text.split('Mina tider', 1)[1]
                 time_ranges_after = re.findall(r'(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})', after_mina_tider)
-                for time_range in time_ranges_after:
-                    mina_tider_times.add(time_range)
+
+                # Find the date associated with this "Mina tider" entry
+                # Look at the previous row in the table to find the date
+                parent_row = parent_td.find_parent('tr')
+                if parent_row:
+                    # Look at previous sibling rows to find the date
+                    current_row = parent_row
+                    date_str = None
+                    while current_row:
+                        # Check cells in this row for a date
+                        cells = current_row.find_all('td')
+                        for cell in cells:
+                            cell_text_check = cell.get_text(strip=True)
+                            date_match = re.match(r'(\d{4}-\d{2}-\d{2})', cell_text_check)
+                            if date_match:
+                                date_str = date_match.group(1)
+                                break
+                        if date_str:
+                            break
+                        # Move to previous row
+                        current_row = current_row.find_previous_sibling('tr')
+
+                    # Store the time ranges with the associated date
+                    if date_str:
+                        for time_range in time_ranges_after:
+                            mina_tider_entries[(date_str, time_range)] = True
+
+    # Debug: Print what "Mina tider" entries were found (if any)
+    # Uncomment for debugging:
+    # if mina_tider_entries:
+    #     print(f"Found {len(mina_tider_entries)} Mina tider entries:")
+    #     for (date, time_tuple) in sorted(mina_tider_entries.keys()):
+    #         print(f"  {date} {time_tuple[0]}:{time_tuple[1]}-{time_tuple[2]}:{time_tuple[3]}")
 
     # Find the main table with schedule information
     # Look for table with headers like "Listtyp", "Datum", "Tid", "Kurser"
@@ -816,13 +956,13 @@ def get_planned_schedules(handledning_cookies: Dict[str, str]) -> List[Dict[str,
                 start_time = date_obj.replace(hour=start_hour, minute=start_min)
                 end_time = date_obj.replace(hour=end_hour, minute=end_min)
 
-                # Only include this schedule if it matches a "Mina tider" time range
+                # Only include this schedule if it matches a "Mina tider" entry for this date+time
                 # time_tuple format: ('10', '00', '12', '00') from the regex match
                 time_tuple = (time_match.group(1), time_match.group(2),
                              time_match.group(3), time_match.group(4))
 
-                if mina_tider_times and time_tuple not in mina_tider_times:
-                    # Skip this schedule - not in "Mina tider"
+                if mina_tider_entries and (date_str, time_tuple) not in mina_tider_entries:
+                    # Skip this schedule - not in "Mina tider" for this date
                     continue
 
                 # Try to find list ID from any links in the row

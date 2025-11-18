@@ -4,7 +4,7 @@ from typing import Optional, List, Dict
 from datetime import datetime, timedelta
 import requests
 from dotenv import load_dotenv
-from login import mobil_handledning_login, activate_all_lists, daisy_staff_login, daisy_search_student, handledning_login, get_list_info_for_student, get_planned_schedules
+from login import mobil_handledning_login, activate_all_lists, daisy_staff_login, daisy_search_student, handledning_login, get_list_info_for_student, get_mobile_schedules
 
 load_dotenv()
 
@@ -139,11 +139,11 @@ while True:
         SLOW_POLL_INTERVAL = 15 * 60  # 15 minutes when no active session
         FAST_POLL_INTERVAL = 1  # 1 second when in active session
 
-        # Fetch initial schedule
+        # Fetch initial schedule from mobile site
         print("Fetching initial schedule...")
         schedules = []
         try:
-            schedules = get_planned_schedules(handledning_cookies)
+            schedules = get_mobile_schedules(cookies_dict)
             print(f"Found {len(schedules)} scheduled sessions")
             if schedules:
                 for schedule in schedules[:3]:  # Show first 3
@@ -163,7 +163,7 @@ while True:
             if current_time - last_schedule_fetch_time >= SCHEDULE_FETCH_INTERVAL:
                 print("Refreshing schedule...")
                 try:
-                    schedules = get_planned_schedules(handledning_cookies)
+                    schedules = get_mobile_schedules(cookies_dict)
                     print(f"Found {len(schedules)} scheduled sessions")
                     last_schedule_fetch_time = current_time
                 except Exception as e:

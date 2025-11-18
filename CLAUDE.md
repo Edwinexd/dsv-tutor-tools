@@ -32,3 +32,25 @@ The calendar worker filters schedules to only show sessions where the user is ac
 The worker includes automatic cookie expiration detection:
 - If a cached cookie is expired (redirects to login page), it automatically re-authenticates
 - Add `&nocache=true` to calendar URL to force fresh login (useful for debugging)
+
+## Web Scraping Best Practices
+
+When implementing new scraping functionality or debugging existing parsers:
+
+1. **Always write debug scripts first** to fetch and examine the actual HTML structure
+   - Create a `debug_*.py` script that logs in and saves the HTML to a file
+   - Inspect the saved HTML to understand the structure before writing parsing logic
+   - Example: `debug_mobile_schedules.py` fetches and saves HTML from mobile site
+   - **Do NOT commit debug/test scripts** - they are temporary development tools
+
+2. **Write test scripts** to verify parsing works correctly
+   - Create a `test_*.py` script that runs your parsing function and prints results
+   - Verify the output matches what you expect from the saved HTML
+   - Example: `test_mobile_schedules.py` tests `get_mobile_schedules()` function
+   - **Do NOT commit debug/test scripts** - they are temporary development tools
+
+3. **Document differences between sites**
+   - Desktop (`handledning.dsv.su.se`) vs Mobile (`mobil.handledning.dsv.su.se`) may show different data
+   - Desktop site: Shows future scheduled sessions via "Mina tider" entries (requires date+time matching)
+   - Mobile site: Shows currently active lists (where you're activated), better for detecting ongoing sessions
+   - Use the appropriate site based on what data you need
