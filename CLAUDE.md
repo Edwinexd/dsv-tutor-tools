@@ -42,12 +42,14 @@ When implementing new scraping functionality or debugging existing parsers:
    - Inspect the saved HTML to understand the structure before writing parsing logic
    - Example: `debug_mobile_schedules.py` fetches and saves HTML from mobile site
    - **Do NOT commit debug/test scripts** - they are temporary development tools
+   - **Delete debug/test scripts after use** - clean them up before committing
 
 2. **Write test scripts** to verify parsing works correctly
    - Create a `test_*.py` script that runs your parsing function and prints results
    - Verify the output matches what you expect from the saved HTML
    - Example: `test_mobile_schedules.py` tests `get_mobile_schedules()` function
    - **Do NOT commit debug/test scripts** - they are temporary development tools
+   - **Delete debug/test scripts after use** - clean them up before committing
 
 3. **Document differences between sites**
    - Desktop (`handledning.dsv.su.se`) vs Mobile (`mobil.handledning.dsv.su.se`) may show different data
