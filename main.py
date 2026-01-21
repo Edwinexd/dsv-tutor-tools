@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 import requests
 from dotenv import load_dotenv
 from login import mobil_handledning_login, activate_all_lists, daisy_staff_login, daisy_search_student, handledning_login, get_list_info_for_student, get_mobile_schedules
+from cookie_cache import clear_cache
 
 STOCKHOLM_TZ = ZoneInfo("Europe/Stockholm")
 
@@ -161,8 +162,9 @@ while True:
         last_polling_mode = None  # Track polling mode to avoid duplicate logging
 
         while True:
-            # Check if it's time to refetch schedule
             current_time = time.time()
+
+            # Check if it's time to refetch schedule
             if current_time - last_schedule_fetch_time >= SCHEDULE_FETCH_INTERVAL:
                 print("Refreshing schedule...")
                 try:
@@ -170,7 +172,9 @@ while True:
                     print(f"Found {len(schedules)} scheduled sessions")
                     last_schedule_fetch_time = current_time
                 except Exception as e:
-                    print(f"Failed to refresh schedule: {e}")
+                    print(f"Failed to refresh schedule: {e} - re-logging in...")
+                    clear_cache()  # Clear cached cookies to force fresh login
+                    break  # Session likely expired, re-login
 
             # Determine polling interval based on whether we're in an active session
             in_active_session = is_in_active_session(schedules)
@@ -181,6 +185,14 @@ while True:
             if current_mode != last_polling_mode:
                 if in_active_session:
                     print(f"Entering active session period - switching to fast polling ({FAST_POLL_INTERVAL}s interval)")
+                    # Activate lists when entering active session
+                    print("Activating lists for session...")
+                    try:
+                        activated_count = activate_all_lists(cookies_dict)
+                        print(f"Activated {activated_count} list(s)")
+                        last_activation_time = time.time()
+                    except Exception as e:
+                        print(f"Failed to activate lists: {e}")
                 else:
                     next_session = get_next_session_time(schedules)
                     if next_session:
@@ -213,7 +225,8 @@ while True:
                 if "Du är inte aktiv på någon lista." in response.text:
                     print("You are not active on any list - will retry later")
                 else:
-                    print("Session invalid (not active on any list) - will retry later")
+                    print("Session invalid - will retry later")
+                    clear_cache()  # Clear cached cookies to force fresh login
                 wait_until_retry()
                 break  # Break inner loop to re-login
 
