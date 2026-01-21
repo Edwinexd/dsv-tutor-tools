@@ -2,9 +2,12 @@ import os
 import time
 from typing import Optional, List, Dict
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import requests
 from dotenv import load_dotenv
 from login import mobil_handledning_login, activate_all_lists, daisy_staff_login, daisy_search_student, handledning_login, get_list_info_for_student, get_mobile_schedules
+
+STOCKHOLM_TZ = ZoneInfo("Europe/Stockholm")
 
 load_dotenv()
 
@@ -27,7 +30,7 @@ def send_notification(token, user, message):
 
 def calculate_next_retry_time():
     """Calculate next retry time: either next midnight or in 1 hour, whichever comes first"""
-    now = datetime.now()
+    now = datetime.now(STOCKHOLM_TZ)
 
     # Next midnight
     next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -49,8 +52,8 @@ def wait_until_retry():
 
     # Sleep in 10-minute intervals and check if we've reached the target time
     # This handles laptop sleep/wake cycles properly
-    while datetime.now() < retry_time:
-        remaining = (retry_time - datetime.now()).total_seconds()
+    while datetime.now(STOCKHOLM_TZ) < retry_time:
+        remaining = (retry_time - datetime.now(STOCKHOLM_TZ)).total_seconds()
         if remaining <= 0:
             break
         # Sleep for at most 10 minutes (600 seconds) at a time
@@ -68,7 +71,7 @@ def is_in_active_session(schedules: List[Dict], buffer_minutes: int = 15) -> boo
     Returns:
         True if we're currently in an active session (or within buffer), False otherwise
     """
-    now = datetime.now()
+    now = datetime.now(STOCKHOLM_TZ)
     buffer = timedelta(minutes=buffer_minutes)
 
     for schedule in schedules:
@@ -91,7 +94,7 @@ def get_next_session_time(schedules: List[Dict]) -> Optional[datetime]:
     Returns:
         Datetime of next session start, or None if no upcoming sessions
     """
-    now = datetime.now()
+    now = datetime.now(STOCKHOLM_TZ)
     upcoming_sessions = [s["start_time"] for s in schedules if s["start_time"] > now]
 
     if upcoming_sessions:

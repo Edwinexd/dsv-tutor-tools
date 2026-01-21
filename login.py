@@ -1,7 +1,10 @@
 import requests
 from bs4 import BeautifulSoup
 from typing import Dict, List, Optional
+from zoneinfo import ZoneInfo
 from cookie_cache import get_cached_cookie, save_cookie_to_cache
+
+STOCKHOLM_TZ = ZoneInfo("Europe/Stockholm")
 
 
 def mobil_handledning_login(su_username: str, su_password: str, use_cache: bool = True) -> str:
@@ -458,8 +461,8 @@ def get_mobile_schedules(cookies_dict: Dict[str, str]) -> List[Dict[str, str]]:
                 if listid_match:
                     list_id = listid_match.group(1)
 
-        # Create datetime objects for today at the specified times
-        now = datetime.now()
+        # Create datetime objects for today at the specified times (Stockholm timezone)
+        now = datetime.now(STOCKHOLM_TZ)
         start_time = now.replace(hour=start_hour, minute=start_min, second=0, microsecond=0)
         end_time = now.replace(hour=end_hour, minute=end_min, second=0, microsecond=0)
 
@@ -944,8 +947,8 @@ def get_planned_schedules(handledning_cookies: Dict[str, str]) -> List[Dict[str,
                 # Column 4: Comments/notes (e.g., "Ange Zoom-ID")
                 comments = cells[4].get_text(strip=True) if len(cells) > 4 else ""
 
-                # Parse date
-                date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+                # Parse date (Stockholm timezone)
+                date_obj = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=STOCKHOLM_TZ)
 
                 # Parse time
                 start_hour = int(time_match.group(1))
