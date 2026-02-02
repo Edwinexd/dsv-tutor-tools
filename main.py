@@ -138,6 +138,7 @@ while True:
         last_name: Optional[str] = None
         last_activation_time = time.time()
         last_schedule_fetch_time = 0.0
+        last_activation_date = datetime.now(STOCKHOLM_TZ).date()  # Track date for day-change detection
         ACTIVATION_INTERVAL = 15 * 60  # 15 minutes in seconds
         SCHEDULE_FETCH_INTERVAL = 15 * 60  # 15 minutes in seconds
         SLOW_POLL_INTERVAL = 15 * 60  # 15 minutes when no active session
@@ -163,6 +164,25 @@ while True:
 
         while True:
             current_time = time.time()
+
+            # Check for day change - re-login to get fresh session and activate new day's lists
+            current_date = datetime.now(STOCKHOLM_TZ).date()
+            if current_date != last_activation_date:
+                print(f"Day changed from {last_activation_date} to {current_date} - re-logging in...")
+                break  # Break to outer loop to re-login and re-activate
+
+            # Check if it's time to re-activate lists (always, not just during active sessions)
+            if current_time - last_activation_time >= ACTIVATION_INTERVAL:
+                print("Re-activating all lists (periodic check)...")
+                try:
+                    activated_count = activate_all_lists(cookies_dict)
+                    print(f"Activated {activated_count} list(s)")
+                    last_activation_time = current_time
+                    last_activation_date = current_date
+                except Exception as e:
+                    print(f"Failed to activate lists: {e} - re-logging in...")
+                    clear_cache()
+                    break  # Session likely expired, re-login
 
             # Check if it's time to refetch schedule
             if current_time - last_schedule_fetch_time >= SCHEDULE_FETCH_INTERVAL:
@@ -191,6 +211,7 @@ while True:
                         activated_count = activate_all_lists(cookies_dict)
                         print(f"Activated {activated_count} list(s)")
                         last_activation_time = time.time()
+                        last_activation_date = current_date
                     except Exception as e:
                         print(f"Failed to activate lists: {e}")
                 else:
@@ -207,17 +228,6 @@ while True:
                 continue
 
             time.sleep(FAST_POLL_INTERVAL)
-
-            # Check if it's time to reactivate lists
-            current_time = time.time()
-            if current_time - last_activation_time >= ACTIVATION_INTERVAL:
-                print("Re-activating all lists (15-minute check)...")
-                try:
-                    activated_count = activate_all_lists(cookies_dict)
-                    print(f"Activated {activated_count} list(s)")
-                    last_activation_time = current_time
-                except Exception as e:
-                    print(f"Failed to activate lists (will retry on next check): {e}")
 
             response = requests.get(URL, cookies=cookies_dict, timeout=5, headers={"X-Powered-By": "dsv-tutor-pushover (https://github.com/Edwinexd/dsv-tutor-pushover); Contact (edwinsu@dsv.su.se)"})
 
