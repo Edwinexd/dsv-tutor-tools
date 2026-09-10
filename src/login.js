@@ -2,6 +2,10 @@ import * as cheerio from 'cheerio';
 
 const CACHE_DURATION = 3600; // 1 hour in seconds
 
+// handledning serves 200s with no Cache-Control, which makes them heuristically
+// cacheable - and a cached copy of a session-specific page is never what we want.
+const NO_CACHE = { cacheTtl: 0 };
+
 // Helper to extract cookies from Set-Cookie headers
 function extractCookies(response) {
   const cookies = {};
@@ -55,7 +59,8 @@ export async function handledningLogin(kv, username, password, useCache = true) 
   // 1. Get main page
   let response = await fetch('https://handledning.dsv.su.se/', {
     headers: baseHeaders,
-    redirect: 'follow'
+    redirect: 'follow',
+    cf: NO_CACHE
   });
   Object.assign(cookies, extractCookies(response));
   let html = await response.text();
@@ -92,7 +97,8 @@ export async function handledningLogin(kv, username, password, useCache = true) 
 
     response = await fetch(currentUrl, {
       headers: headers1,
-      redirect: 'manual'  // Handle redirects manually
+      redirect: 'manual',  // Handle redirects manually
+      cf: NO_CACHE
     });
 
     Object.assign(cookies, extractCookies(response));
@@ -248,7 +254,8 @@ export async function handledningLogin(kv, username, password, useCache = true) 
       method: redirectCount === 0 ? 'POST' : 'GET',
       headers: headers4,
       body: redirectCount === 0 ? new URLSearchParams(formData3) : undefined,
-      redirect: 'manual'
+      redirect: 'manual',
+      cf: NO_CACHE
     });
 
     Object.assign(cookies, extractCookies(response));
@@ -289,8 +296,9 @@ export async function handledningLogin(kv, username, password, useCache = true) 
     throw new Error('Failed to obtain JSESSIONID cookie');
   }
 
-  // Cache the cookie
-  if (useCache) {
+  // Always cache a freshly obtained cookie: `useCache` governs whether we may
+  // *read* a cached one, not whether we keep what this login just paid for.
+  if (kv) {
     const cacheKey = `cookie:${username}:handledning`;
     await kv.put(cacheKey, JSON.stringify({
       cookie: jsessionid,
@@ -301,40 +309,45 @@ export async function handledningLogin(kv, username, password, useCache = true) 
   return jsessionid;
 }
 
-export async function getPlannedSchedules(kv, username, password, useCache = true) {
-  let jsessionid = await handledningLogin(kv, username, password, useCache);
+const TEACHER_URL = 'https://handledning.dsv.su.se/teacher/?onlyown=yes';
 
-  let response = await fetch('https://handledning.dsv.su.se/teacher/?onlyown=yes', {
+async function fetchTeacherPage(jsessionid) {
+  const response = await fetch(TEACHER_URL, {
     headers: {
       'Cookie': `JSESSIONID=${jsessionid}`,
       'X-Powered-By': 'dsv-calendar-worker; Contact (edwinsu@dsv.su.se)'
-    }
+    },
+    cf: NO_CACHE
   });
 
   if (!response.ok) {
     throw new Error(`Failed to fetch schedules: ${response.status}`);
   }
 
-  let html = await response.text();
+  return { response, html: await response.text() };
+}
 
-  // Check if we got redirected to login page (cookie expired)
-  if (html.includes('Stockholm University') && html.includes('login')) {
-    // Cookie is invalid, force re-login
+// An expired JSESSIONID 302s back to the portal, so the landing page is a normal
+// 200 and the status alone tells us nothing.
+function looksLoggedOut(response, html) {
+  if (response.url.includes('errormessage=')) return true;
+  return html.includes('Stockholm University') && html.includes('login');
+}
+
+export async function getPlannedSchedules(kv, username, password, useCache = true) {
+  let jsessionid = await handledningLogin(kv, username, password, useCache);
+  let { response, html } = await fetchTeacherPage(jsessionid);
+
+  // Cached cookie expired - force a re-login and try once more.
+  if (looksLoggedOut(response, html)) {
     jsessionid = await handledningLogin(kv, username, password, false);
+    ({ response, html } = await fetchTeacherPage(jsessionid));
 
-    response = await fetch('https://handledning.dsv.su.se/teacher/?onlyown=yes', {
-      headers: {
-        'Cookie': `JSESSIONID=${jsessionid}`,
-        'X-Powered-By': 'dsv-calendar-worker; Contact (edwinsu@dsv.su.se)'
-      }
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to fetch schedules after re-login: ${response.status}`);
+    if (looksLoggedOut(response, html)) {
+      throw new Error('Still logged out after re-authenticating');
     }
-
-    html = await response.text();
   }
+
   const $ = cheerio.load(html);
   const schedules = [];
 
@@ -368,6 +381,7 @@ export async function getPlannedSchedules(kv, username, password, useCache = tru
   });
 
   // Find table with schedule data
+  let scheduleTableFound = false;
   $('table').each((i, table) => {
     const $table = $(table);
     const rows = $table.find('tr');
@@ -377,6 +391,8 @@ export async function getPlannedSchedules(kv, username, password, useCache = tru
     if (!headerText.includes('Datum') || !headerText.includes('Tid')) {
       return; // continue to next table
     }
+
+    scheduleTableFound = true;
 
     // Parse data rows
     rows.slice(1).each((j, row) => {
@@ -447,6 +463,14 @@ export async function getPlannedSchedules(kv, username, password, useCache = tru
       }
     });
   });
+
+  // A page without the schedule table is a page we did not understand - most
+  // likely a logged-out redirect. Returning [] here would publish an empty
+  // calendar that is indistinguishable from "no sessions booked", so fail loudly
+  // and let the caller fall back to the last good copy.
+  if (!scheduleTableFound) {
+    throw new Error('Schedule table not found - session likely invalid');
+  }
 
   // Deduplicate
   const seen = new Set();
