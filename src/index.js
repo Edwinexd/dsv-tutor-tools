@@ -1,6 +1,12 @@
-import { handledningLogin, getPlannedSchedules } from './login';
+import { getPlannedSchedules } from './login';
 import { generateICS } from './calendar';
 import { decryptCredentials, verifyDigest } from './crypto';
+import {
+  readCachedICS,
+  writeCachedICS,
+  acquireRefreshLock,
+  releaseRefreshLock
+} from './cache';
 
 export default {
   async fetch(request, env, ctx) {
@@ -11,13 +17,14 @@ export default {
     if (path === '/' || path === '') {
       return new Response(JSON.stringify({
         service: 'DSV Calendar Worker',
-        version: '2.0.0',
+        version: '2.1.0',
         endpoints: {
           '/calendar.ics': 'Get ICS calendar (requires ?digest=sha256&auth=encrypted)',
           '/': 'This page'
         },
         usage: 'digest=SHA256(SECRET+encrypted_auth), auth=AES-GCM-encrypted(username:password)',
         security: 'Credentials are encrypted with AES-256-GCM. Each user gets a unique digest.',
+        caching: 'Calendars are served from cache and refreshed in the background. Add &nocache=true to force a fresh scrape.',
         note: 'Use generate_calendar_url.js to create your encrypted URL'
       }, null, 2), {
         headers: { 'Content-Type': 'application/json' }
@@ -26,7 +33,7 @@ export default {
 
     // Calendar endpoint
     if (path === '/calendar.ics') {
-      return await handleCalendar(request, env);
+      return await handleCalendar(request, env, ctx);
     }
 
     // 404
@@ -37,7 +44,40 @@ export default {
   }
 };
 
-async function handleCalendar(request, env) {
+function icsResponse(icsContent, extraHeaders = {}) {
+  return new Response(icsContent, {
+    headers: {
+      'Content-Type': 'text/calendar; charset=utf-8',
+      'Content-Disposition': 'inline; filename=dsv-tutoring.ics',
+      'Cache-Control': 'private, max-age=900',
+      ...extraHeaders
+    }
+  });
+}
+
+async function buildICS(env, username, password, useCookieCache) {
+  const schedules = await getPlannedSchedules(env.COOKIE_CACHE, username, password, useCookieCache);
+  return { ics: generateICS(schedules), count: schedules.length };
+}
+
+async function refreshInBackground(env, username, password) {
+  const kv = env.COOKIE_CACHE;
+
+  if (!await acquireRefreshLock(kv, username)) return;
+
+  try {
+    const { ics, count } = await buildICS(env, username, password, true);
+    await writeCachedICS(kv, username, ics, count);
+  } catch (e) {
+    // The stale copy stays in KV, so a failed refresh just means the next
+    // request serves the same calendar again and retries.
+    console.error('Background calendar refresh failed:', e);
+  } finally {
+    await releaseRefreshLock(kv, username);
+  }
+}
+
+async function handleCalendar(request, env, ctx) {
   const url = new URL(request.url);
   const digest = url.searchParams.get('digest');
   const auth = url.searchParams.get('auth');
@@ -82,29 +122,47 @@ async function handleCalendar(request, env) {
     });
   }
 
-  // Fetch schedules
-  try {
-    // Check for nocache parameter to bypass KV cache
-    const nocache = url.searchParams.get('nocache') === 'true';
-    const schedules = await getPlannedSchedules(env.COOKIE_CACHE, username, password, !nocache);
+  const nocache = url.searchParams.get('nocache') === 'true';
 
-    // Generate ICS
-    const icsContent = generateICS(schedules);
-
-    // Add debug header if nocache was used
-    const headers = {
-      'Content-Type': 'text/calendar; charset=utf-8',
-      'Content-Disposition': 'inline; filename=dsv-tutoring.ics',
-      'Cache-Control': 'private, max-age=900'
-    };
-    if (nocache) {
-      headers['X-Cache-Bypassed'] = 'true';
+  // Serve the cached calendar immediately, refreshing behind the response if
+  // it has gone stale. This is the path calendar clients normally hit.
+  if (!nocache) {
+    const cached = await readCachedICS(env.COOKIE_CACHE, username);
+    if (cached) {
+      if (cached.stale) {
+        ctx.waitUntil(refreshInBackground(env, username, password));
+      }
+      return icsResponse(cached.ics, {
+        'X-Cache': cached.stale ? 'STALE' : 'HIT',
+        'X-Cache-Age': cached.age.toString(),
+        'X-Schedule-Count': cached.scheduleCount.toString()
+      });
     }
-    headers['X-Schedule-Count'] = schedules.length.toString();
+  }
 
-    return new Response(icsContent, { headers });
+  // Cold cache, or an explicitly forced refresh: build it inline.
+  try {
+    const { ics, count } = await buildICS(env, username, password, !nocache);
+    ctx.waitUntil(writeCachedICS(env.COOKIE_CACHE, username, ics, count));
+
+    return icsResponse(ics, {
+      'X-Cache': nocache ? 'BYPASS' : 'MISS',
+      'X-Schedule-Count': count.toString()
+    });
   } catch (e) {
     console.error('Calendar fetch error:', e);
+
+    // A failed scrape must not empty out a subscribed calendar - fall back to
+    // the last good copy if we have one, however old it is.
+    const fallback = await readCachedICS(env.COOKIE_CACHE, username);
+    if (fallback) {
+      return icsResponse(fallback.ics, {
+        'X-Cache': 'STALE-ERROR',
+        'X-Cache-Age': fallback.age.toString(),
+        'X-Schedule-Count': fallback.scheduleCount.toString()
+      });
+    }
+
     return new Response(JSON.stringify({
       error: `Authentication failed: ${e.message}`,
       stack: e.stack

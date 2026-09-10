@@ -17,7 +17,8 @@ This deploys the worker defined in `wrangler.toml` to Cloudflare's edge network.
 - **Login/Scraping Logic**: `src/login.js`
 - **Calendar Generation**: `src/calendar.js`
 - **Encryption/Auth**: `src/crypto.js`
-- **KV Store**: Used for caching session cookies (binding: `COOKIE_CACHE`)
+- **ICS Caching**: `src/cache.js`
+- **KV Store**: Used for caching session cookies and generated calendars (binding: `COOKIE_CACHE`)
 
 ## Important Filtering Logic
 
@@ -26,6 +27,25 @@ The calendar worker filters schedules to only show sessions where the user is ac
 2. Associating each "Mina tider" with its date by looking at the previous table row
 3. Only including schedules that match BOTH the date AND time from "Mina tider" entries
    - **Critical:** Must match date+time, not just time, since different lists on different days can have the same time slot
+
+## Calendar Caching (stale-while-revalidate)
+
+Building a calendar walks the whole SAML login chain plus a scrape, which is
+slower than calendar clients (Google/Apple) are willing to wait - a slow response
+makes the feed silently stop updating. `src/cache.js` fixes this:
+
+- The generated ICS is stored in KV under `ics:<username>` for 7 days
+- Requests are answered from that cache immediately
+- If the cached copy is older than 15 minutes, a refresh is queued with
+  `ctx.waitUntil()` **after** the response is sent, so the next fetch gets fresh data
+- A KV lock (`ics-refresh:<username>`, 120s TTL) keeps concurrent requests from
+  each starting their own refresh
+- If a live scrape fails but a cached copy exists, the cached copy is served
+  rather than an error - a failed login must never empty a subscribed calendar
+- Only a cold cache (or `&nocache=true`) blocks on the full login + scrape
+
+Responses carry `X-Cache` (`HIT` / `STALE` / `MISS` / `BYPASS` / `STALE-ERROR`),
+`X-Cache-Age` (seconds) and `X-Schedule-Count` for debugging.
 
 ## Automatic Cookie Refresh
 
